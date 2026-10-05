@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Micro-Werewolf Role Revealer</title>
+  <title>Micro-Werewolf Identity Vault</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -20,33 +20,51 @@
       border: 1px solid #2b2d31;
       padding: 2rem;
       border-radius: 12px;
-      max-width: 360px;
+      max-width: 380px;
       width: 90%;
       text-align: center;
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     }
-    h2 { margin-top: 0; }
     .role-box {
       font-size: 1.5rem;
       font-weight: bold;
-      padding: 1.5rem;
+      padding: 1.2rem;
       border-radius: 8px;
-      margin: 1.5rem 0;
+      margin: 1.2rem 0;
       background: #2b2d31;
     }
-    .hint { color: #949ba4; font-size: 0.9rem; }
+    .token-box {
+      background: #111214;
+      border: 1px dashed #5865f2;
+      padding: 10px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 1.1rem;
+      color: #5865f2;
+      user-select: all;
+      margin: 12px 0;
+      word-break: break-all;
+    }
+    button {
+      padding: 10px 16px;
+      background: #5865f2;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .hint { color: #949ba4; font-size: 0.85rem; line-height: 1.4; margin-top: 10px; }
   </style>
 </head>
 <body>
 
-  <div class="card">
-    <h2>Secret Identity</h2>
-    <div id="role-display" class="role-box">Decrypting...</div>
-    <div id="role-hint" class="hint"></div>
+  <div class="card" id="app">
+    <h2>Loading...</h2>
   </div>
 
   <script>
-    // PRNG matching the bot
+    // PRNG
     function prng(seed) {
       return function () {
         let t = (seed += 0x6d2b79f5);
@@ -56,48 +74,81 @@
       };
     }
 
-    function decryptToken(tokenHex) {
-      if (!tokenHex || tokenHex.length < 8) return null;
-      
-      const seed = parseInt(tokenHex.substr(0, 8), 16);
-      const cipherHex = tokenHex.substr(8);
-      const rand = prng(seed);
-      
-      let plain = "";
-      for (let i = 0; i < cipherHex.length; i += 2) {
-        const byte = parseInt(cipherHex.substr(i, 2), 16);
-        const mask = Math.floor(rand() * 256);
-        plain += String.fromCharCode(byte ^ mask);
-      }
-      return plain;
+    // Initialize or retrieve private secret key on this device
+    let myPrivKey = localStorage.getItem("mw_priv_key");
+    if (!myPrivKey) {
+      // Generate a strong random 32-bit hex key
+      const arr = new Uint32Array(1);
+      window.crypto.getRandomValues(arr);
+      myPrivKey = arr[0].toString(16).padStart(8, "0");
+      localStorage.setItem("mw_priv_key", myPrivKey);
     }
 
+    // Public token is derived via hash
+    function getPubKey(privHex) {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < privHex.length; i++) {
+        h ^= privHex.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+      return (h >>> 0).toString(16).padStart(8, "0");
+    }
+
+    const myPubKey = getPubKey(myPrivKey);
     const hash = window.location.hash.substring(1);
-    const result = decryptToken(hash);
+    const app = document.getElementById("app");
 
-    const display = document.getElementById("role-display");
-    const hint = document.getElementById("role-hint");
-
-    if (!result) {
-      display.textContent = "❌ Invalid Token";
-      hint.textContent = "Please use the official link provided by the bot.";
+    if (!hash || !hash.includes(":")) {
+      // Player is just visiting to get their join code
+      app.innerHTML = `
+        <h2>Player Keycard</h2>
+        <p class="hint">Your device has generated your secret key. Use this public token to join games:</p>
+        <div class="token-box">!join ${myPubKey}</div>
+        <p class="hint">Only <strong>this specific browser</strong> holds the decryption key. Other players cannot open your links.</p>
+      `;
     } else {
-      const parts = result.split("|"); // [Role, ExtraHint]
-      const role = parts[0];
-      const detail = parts[1] || "";
+      // Trying to unlock a role: hash is in the format "targetPubKey:cipherHex"
+      const [targetPub, cipherHex] = hash.split(":");
 
-      if (role === "Werewolf") {
-        display.textContent = "🐺 Werewolf";
-        display.style.color = "#ed4245";
-        hint.textContent = "Blend in with the village, deflect accusations, and survive the vote.";
-      } else if (role === "Seer") {
-        display.textContent = "🔮 Seer";
-        display.style.color = "#5865f2";
-        hint.textContent = detail ? `Vision: ${detail}` : "You see the truth.";
+      if (targetPub !== myPubKey) {
+        app.innerHTML = `
+          <h2 style="color: #ed4245;">🔒 Access Denied</h2>
+          <p class="hint">This role link belongs to a different player. Your browser does not hold the matching private key.</p>
+        `;
       } else {
-        display.textContent = "🌾 Villager";
-        display.style.color = "#57f287";
-        hint.textContent = "Deduce who the Werewolf is through open thread debate and vote them out.";
+        // Correct browser: decrypt payload using local private key
+        const seed = parseInt(myPrivKey, 16);
+        const rand = prng(seed);
+        let plain = "";
+        for (let i = 0; i < cipherHex.length; i += 2) {
+          const byte = parseInt(cipherHex.substr(i, 2), 16);
+          const mask = Math.floor(rand() * 256);
+          plain += String.fromCharCode(byte ^ mask);
+        }
+
+        const parts = plain.split("|");
+        const role = parts[0];
+        const detail = parts[1] || "";
+
+        let color = "#57f287";
+        let icon = "🌾";
+        let desc = "Deduce the Werewolf through debate and vote them out.";
+
+        if (role === "Werewolf") {
+          color = "#ed4245";
+          icon = "🐺";
+          desc = "Blend in, deflect accusations, and survive the vote.";
+        } else if (role === "Seer") {
+          color = "#5865f2";
+          icon = "🔮";
+          desc = detail ? `Vision: ${detail}` : "You see the truth.";
+        }
+
+        app.innerHTML = `
+          <h2>Secret Identity</h2>
+          <div class="role-box" style="color:${color}">${icon}${role}</div>
+          <div class="hint">${desc}</div>
+        `;
       }
     }
   </script>
